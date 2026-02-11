@@ -7,4 +7,7 @@ edition = "2024"
 clap = { version = "4.5.58", features = ["derive"] }
 anyhow = "1.0.101"
 ignore = "0.4.25"
-
+tree-sitter = "0.20"
+tree-sitter-rust = "0.20"
+once_cell = "1.21.3"
+thiserror = "1.0"
