@@ -3,18 +3,25 @@ extern crate core;
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use ignore::WalkBuilder;
+use serde::de::Unexpected::Str;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
+use std::fmt::Pointer;
 use std::fs;
 use std::io::Write;
 use std::sync::{LazyLock, Mutex};
 use tiktoken_rs::cl100k_base;
-use tree_sitter::{Parser as TreeParser, Query, QueryCursor, Tree};
-use tree_sitter_rust::language;
+use tree_sitter::{Language, Parser as TreeParser, Query, QueryCursor, Tree};
 
+#[derive(Debug, Clone, Copy)]
+enum SupportedLanguage {
+    Rust,
+    Python,
+}
 #[derive(Debug, Serialize, Deserialize)]
 struct ChunkData {
     file_path: String,
+    language: String,
     chunk_type: String,
     start_byte: usize,
     end_byte: usize,
@@ -25,18 +32,18 @@ struct ChunkData {
 }
 
 static TREE_PARSER: LazyLock<Mutex<TreeParser>> = LazyLock::new(|| {
-    let mut parser = TreeParser::new();
-    parser
-        .set_language(tree_sitter_rust::language())
-        .expect("Failed to set language");
+    let parser = TreeParser::new();
     Mutex::new(parser)
 });
 
-pub fn tree_parse(content: &str) -> Result<Tree> {
+pub fn tree_parse(content: &str, language: Language) -> Result<Tree> {
     let mut parser = TREE_PARSER
         .lock()
         .map_err(|e| anyhow!("Parser lock poisoned: {}", e))?;
+
+    parser.set_language(language)?;
     parser.reset();
+
     parser.parse(content, None).with_context(|| {
         format!(
             "Failed to parse tree form: {}",
@@ -47,11 +54,12 @@ pub fn tree_parse(content: &str) -> Result<Tree> {
 
 pub fn find_chunks<'a>(
     content: &'a str,
+    language: Language,
     query_code: &str,
-) -> Result<Vec<(&'a str, usize, usize, usize, usize)>> {
-    let tree = tree_parse(&content)?;
+) -> Result<Vec<(&'a str, &'a str, usize, usize, usize, usize)>> {
+    let tree = tree_parse(&content, language)?;
     let mut cursor = QueryCursor::new();
-    let query = Query::new(language(), query_code).expect("Query creation failed");
+    let query = Query::new(language, query_code).expect("Query creation failed");
     let matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
 
     let mut response = Vec::new();
@@ -64,20 +72,41 @@ pub fn find_chunks<'a>(
             let start_line = node.start_position().row + 1;
             let end_line = node.end_position().row + 1;
             let chunk_text = &content[start_byte..end_byte];
-            response.push((chunk_text, start_byte, end_byte, start_line, end_line));
+            let type_name = node.kind();
+            response.push((
+                chunk_text, type_name, start_byte, end_byte, start_line, end_line,
+            ));
         }
     }
 
     Ok(response)
 }
 
-fn is_fit_extension(ext: Option<&OsStr>) -> bool {
+fn get_language_config(ext: &str) -> Option<(SupportedLanguage, Language, &'static str)> {
+    // &'static str, -> this means that the string slice has a static lifetime, meaning it is valid for the entire duration of the program. This is often used for string literals, which are stored in the binary and exist for the lifetime of the program.
     match ext {
-        Some(os_str) => match os_str.to_str() {
-            Some("rs") => true,
-            _ => false,
-        },
-        None => false,
+        "rs" => Some((
+            SupportedLanguage::Rust,
+            tree_sitter_rust::language(),
+            r#"
+            [
+                (function_item)
+                (struct_item)
+                (impl_item)
+            ] @chunk
+            "#,
+        )),
+        "py" => Some((
+            SupportedLanguage::Python,
+            tree_sitter_python::language(),
+            r#"
+            [
+                (function_definition)
+                (class_definition)
+            ] @chunk
+            "#,
+        )),
+        _ => None,
     }
 }
 
@@ -96,6 +125,7 @@ fn main() -> Result<()> {
 
     let _ = fs::write(&args.output, "")
         .with_context(|| format!("could not create output file: {}", args.output))?;
+
     let mut output_file = fs::OpenOptions::new()
         .write(true)
         .append(true)
@@ -113,8 +143,17 @@ fn main() -> Result<()> {
     for result in walker {
         if let Ok(entry) = result {
             let path_buf = entry.path();
-            if path_buf.is_file() && is_fit_extension(path_buf.extension()) {
-                println!("\n📂 File: {}", path_buf.display());
+
+            if !path_buf.is_file() {
+                continue;
+            }
+            let ext = match path_buf.extension().and_then(OsStr::to_str) {
+                Some(e) => e,
+                None => continue,
+            };
+
+            if let Some((lang_type, language, query_code)) = get_language_config(ext) {
+                println!("\n📂 File: {} ({:?})", path_buf.display(), lang_type);
 
                 let content = match fs::read_to_string(path_buf) {
                     Ok(c) => c,
@@ -124,18 +163,17 @@ fn main() -> Result<()> {
                     }
                 };
 
-                let query_code = "(function_item) @function";
+                let chunks = find_chunks(&content, language, query_code)?;
 
-                let chunks = find_chunks(&content, query_code)?;
-
-                for (chunk_text, start_byte, end_byte, start_line, end_line) in chunks {
+                for (chunk_text, type_name, start_byte, end_byte, start_line, end_line) in chunks {
                     let token_count = tokenizer.encode_with_special_tokens(chunk_text).len();
                     total_tokens += token_count;
                     total_chunks += 1;
 
                     let chunk_data = ChunkData {
                         file_path: path_buf.display().to_string(),
-                        chunk_type: "function".to_string(),
+                        language: format!("{:?}", lang_type),
+                        chunk_type: type_name.to_string(),
                         start_byte: start_byte,
                         end_byte: end_byte,
                         start_line: start_line,

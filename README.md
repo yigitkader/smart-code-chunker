@@ -1,0 +1,1 @@
+* A high-performance data tool that uses OpenAI tokenization standards (tiktoken) and efficiently prepares large codebases for RAG systems.
