@@ -1,6 +1,6 @@
 extern crate core;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,13 @@ use std::sync::{LazyLock, Mutex};
 use tiktoken_rs::cl100k_base;
 use tree_sitter::{Language, Node, Parser as TreeParser, Query, QueryCursor, Tree};
 
+
+// Bu bir yardımcı fonksiyondur
+// Ve çok önemlidir.
+// Bu Test amaçlıdır, gerçek uygulamada kritik bir işlemi temsil eder.
+fn critical_process() {
+    println!("Processing...");
+}
 #[derive(Debug, Clone, Copy)]
 enum SupportedLanguage {
     Rust,
@@ -69,11 +76,35 @@ fn extract_name_from_node<'a>(node: &Node, content: &'a str) -> Option<&'a str> 
     None
 }
 
+fn get_preceding_comments<'a>(node: &Node, content: &'a str) -> Option<String> {
+    let mut comments: Vec<String> = Vec::new();
+    let mut current_node = node.prev_sibling();
+    while let Some(sibling) = current_node {
+        let kind = sibling.kind();
+        if kind.contains("comment") {
+            let start = sibling.start_byte();
+            let end = sibling.end_byte();
+            comments.push(content[start..end].to_string());
+        } else if kind.trim().is_empty() {
+            break;
+        }
+
+        current_node = sibling.next_sibling();
+    }
+
+    if comments.is_empty() {
+        None
+    } else {
+        comments.reverse();
+        Some(comments.join("\n"))
+    }
+}
+
 pub fn find_chunks<'a>(
     content: &'a str,
     language: Language,
     query_code: &str,
-) -> Result<Vec<(&'a str, &'a str, String, usize, usize, usize, usize)>> {
+) -> Result<Vec<(String, &'a str, String, usize, usize, usize, usize)>> {
     let tree = tree_parse(&content, language)?;
     let mut cursor = QueryCursor::new();
     let query = Query::new(language, query_code).expect("Query creation failed");
@@ -115,10 +146,17 @@ pub fn find_chunks<'a>(
             let end_byte = node.end_byte();
             let start_line = node.start_position().row + 1;
             let end_line = node.end_position().row + 1;
-            let chunk_text = &content[start_byte..end_byte];
+            let raw_code = &content[start_byte..end_byte];
             let type_name = node.kind();
+
+            let combined_code = if let Some(comments) = get_preceding_comments(&node, content) {
+                format!("{}\n{}", comments, raw_code)
+            } else {
+                raw_code.to_string()
+            };
+
             response.push((
-                chunk_text,
+                combined_code,
                 type_name,
                 breadcrumbs,
                 start_byte,
@@ -216,7 +254,7 @@ fn main() -> Result<()> {
                 let chunks = find_chunks(&content, language, query_code)?;
 
                 for (
-                    chunk_text,
+                    combined_code,
                     type_name,
                     breadcrumbs,
                     start_byte,
@@ -225,7 +263,7 @@ fn main() -> Result<()> {
                     end_line,
                 ) in chunks
                 {
-                    let token_count = tokenizer.encode_with_special_tokens(chunk_text).len();
+                    let token_count = tokenizer.encode_with_special_tokens(&combined_code).len();
                     total_tokens += token_count;
                     total_chunks += 1;
 
@@ -238,8 +276,8 @@ fn main() -> Result<()> {
                         end_byte: end_byte,
                         start_line: start_line,
                         end_line: end_line,
-                        token_count: chunk_text.split_whitespace().count(),
-                        code: chunk_text.to_string(),
+                        token_count: combined_code.split_whitespace().count(),
+                        code: combined_code.to_string(),
                     };
 
                     let json_line = serde_json::to_string(&chunk_data)?;
