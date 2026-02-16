@@ -1,8 +1,22 @@
-mod files_fetch;
+mod files;
+mod lang_driver;
+mod types;
 
-use anyhow::{Context, Result, anyhow};
+use crate::files::process_file;
+use crate::types::ChunkData;
+use crate::types::ThreadSafeParser;
+use anyhow::{Result, anyhow};
 use clap::Parser;
-use ignore::WalkBuilder;
+use crossbeam_channel::bounded;
+use rayon::iter::ParallelIterator;
+use rayon::prelude::IntoParallelRefIterator;
+use std::ffi::OsStr;
+use std::fs::OpenOptions;
+use std::io::BufWriter;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::thread;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -22,7 +36,58 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let files = files_fetch::get_files(&args.path, &args.since)?;
-    println!("Found {} files", files.len());
-    anyhow::Ok(())
+    let files: Vec<PathBuf> = files::get_files(&args.path, &args.since)?;
+    if files.is_empty() {
+        println!("No files found in the specified path.");
+        return Ok(());
+    }
+
+    let (tx, rx) = bounded::<ChunkData>(1000);
+
+    let output_path = args.output.clone();
+    let writer_handle = thread::spawn(move || -> Result<usize> {
+        let file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&output_path)?;
+
+        let mut writer = BufWriter::new(file);
+        let mut count = 0;
+
+        for chunk in rx {
+            writeln!(writer, "{}", serde_json::to_string(&chunk)?)?;
+            count += 1;
+            if count % 10 == 0 {
+                println!("{} chunks written to file...", count);
+            }
+        }
+        Ok(count)
+    });
+
+    println!(
+        "Scanning: {} files with thread size: {}",
+        files.len(),
+        rayon::current_num_threads()
+    );
+
+    let parser_pool = Arc::new(ThreadSafeParser::new());
+
+    files.par_iter().for_each(|path| {
+        let tx_clone = tx.clone();
+        let parser_pool_clone = parser_pool.clone();
+        if let Err(err) = process_file(path, &parser_pool_clone, &tx_clone) {
+            eprintln!("Error processing file {}: {}", path.display(), err);
+        }
+    });
+
+    drop(tx);
+    let total_chunks = writer_handle
+        .join()
+        .map_err(|_| anyhow!("Writer thread panicked"))?;
+    println!(
+        "Processing completed. Total chunks written: {:?}",
+        total_chunks
+    );
+    println!("Output file: {}", args.output);
+    Ok(())
 }
