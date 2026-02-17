@@ -1,4 +1,6 @@
 mod files;
+mod git;
+mod hash;
 mod lang_driver;
 mod types;
 
@@ -10,11 +12,10 @@ use clap::Parser;
 use crossbeam_channel::bounded;
 use rayon::iter::ParallelIterator;
 use rayon::prelude::IntoParallelRefIterator;
-use std::ffi::OsStr;
 use std::fs::OpenOptions;
 use std::io::BufWriter;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 

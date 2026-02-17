@@ -11,10 +11,10 @@ pub trait LanguageDriver: Send + Sync {
 struct RustDriver;
 impl LanguageDriver for RustDriver {
     fn get_language(&self) -> Language { tree_sitter_rust::language() }
-    fn get_name(&self) -> &'static str { "Rust" }
     fn get_query(&self) -> &'static str {
         r#"[ (function_item) (struct_item) (impl_item) (mod_item) ] @chunk"#
     }
+    fn get_name(&self) -> &'static str { "Rust" }
 
     fn extract_name<'a>(&self, node: &Node, content: &'a str) -> Option<&'a str> {
         if let Some(name_node) = node.child_by_field_name("name") {
@@ -33,10 +33,10 @@ impl LanguageDriver for RustDriver {
 struct PythonDriver;
 impl LanguageDriver for PythonDriver {
     fn get_language(&self) -> Language { tree_sitter_python::language() }
-    fn get_name(&self) -> &'static str { "Python" }
     fn get_query(&self) -> &'static str {
         r#"[ (function_definition) (class_definition) ] @chunk"#
     }
+    fn get_name(&self) -> &'static str { "Python" }
 
     fn extract_name<'a>(&self, node: &Node, content: &'a str) -> Option<&'a str> {
         if let Some(name_node) = node.child_by_field_name("name") {

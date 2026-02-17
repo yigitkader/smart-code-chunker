@@ -1,14 +1,13 @@
+use crate::git::get_git_changes;
+use crate::hash::compute_hash;
 use crate::lang_driver::get_driver;
 use crate::types::{ChunkData, ThreadSafeParser};
-use anyhow::{Context, Error, Result, anyhow};
+use anyhow::{Error, Result};
 use ignore::WalkBuilder;
-use sha2::{Digest, Sha256};
 use std::ffi::OsStr;
 use std::fs;
-use std::io::BufRead;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tiktoken_rs::{CoreBPE, cl100k_base};
 use tree_sitter::{Node, Query, QueryCursor};
 
@@ -28,39 +27,11 @@ pub fn get_files(path: &str, since: &Option<String>) -> Result<Vec<PathBuf>, Err
     Ok(files)
 }
 
-fn get_git_changes(path: &str, since_commit: &str) -> Result<Vec<PathBuf>, Error> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .arg("diff")
-        .arg("--name-only")
-        .arg(since_commit)
-        .arg("HEAD")
-        .output()
-        .context("Git komutu çalıştırılamadı. Git yüklü mü?")?;
-
-    if !output.status.success() {
-        return Err(anyhow!(
-            "Git hatası: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    let stdout = String::from_utf8(output.stdout)?;
-    let files = stdout
-        .lines()
-        .map(|line| Path::new(path).join(line))
-        .filter(|p| p.is_file())
-        .collect();
-
-    Ok(files)
-}
-
 pub fn process_file(
     path: &Path,
     parser_pool: &Arc<ThreadSafeParser>,
     tx_sender: &crossbeam_channel::Sender<ChunkData>,
-) -> anyhow::Result<()> {
+) -> Result<()> {
     let extension = path
         .extension()
         .and_then(OsStr::to_str)
@@ -142,11 +113,15 @@ pub fn process_file(
                     comment: comments.clone(),
                     code: sub_text,
                     start_line: original_start_line + line_offset,
-                    end_line: original_start_line + line_offset + raw_code_bytes.lines().count().min(1),
+                    end_line: original_start_line
+                        + line_offset
+                        + raw_code_bytes.lines().count().min(1),
                     token_count,
                 };
 
-                if tx_sender.send(chunk).is_err() { break; }
+                if tx_sender.send(chunk).is_err() {
+                    break;
+                }
             }
         }
     }
@@ -154,11 +129,6 @@ pub fn process_file(
     Ok(())
 }
 
-fn compute_hash(content: &str) -> String {
-    let mut hasher = Sha256::new(); // no need to crate this with mutex, cause mutex is more expensive than this
-    hasher.update(content);
-    hex::encode(hasher.finalize())
-}
 fn split_text_by_token_limit(
     text: &String,
     tokenizer: &CoreBPE,
