@@ -8,10 +8,8 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tiktoken_rs::{CoreBPE, cl100k_base};
+use tiktoken_rs::{cl100k_base, CoreBPE};
 use tree_sitter::{Node, Query, QueryCursor};
-
-const MAX_CHUNK_TOKENS: usize = 800; // default for GPT-4, we can make this configurable later
 
 pub fn get_files(path: &str, since: &Option<String>) -> Result<Vec<PathBuf>, Error> {
     let files: Vec<PathBuf> = if let Some(commit_hash) = &since {
@@ -27,10 +25,14 @@ pub fn get_files(path: &str, since: &Option<String>) -> Result<Vec<PathBuf>, Err
     Ok(files)
 }
 
+static TOKENIZER: once_cell::sync::Lazy<CoreBPE> =
+    once_cell::sync::Lazy::new(|| cl100k_base().expect("Failed to load tokenizer"));
+
 pub fn process_file(
     path: &Path,
     parser_pool: &Arc<ThreadSafeParser>,
     tx_sender: &crossbeam_channel::Sender<ChunkData>,
+    max_chunk_tokens: usize,
 ) -> Result<()> {
     let extension = path
         .extension()
@@ -50,8 +52,6 @@ pub fn process_file(
     let mut cursor = QueryCursor::new();
     let query = Query::new(driver.get_language(), driver.get_query())?;
     let matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
-
-    let tokenizer = cl100k_base()?;
 
     for m in matches {
         for capture in m.captures {
@@ -75,6 +75,7 @@ pub fn process_file(
                 }
                 parent = p.parent();
             }
+
             context_parts.reverse();
             let context = if context_parts.is_empty() {
                 "root".to_string()
@@ -86,6 +87,7 @@ pub fn process_file(
                 .extract_name(&node, &content)
                 .unwrap_or("anonymous")
                 .to_string();
+
             let raw_code_bytes = &content[node.start_byte()..node.end_byte()];
             let comments = get_preceding_comments(&node, &content).unwrap_or_default();
 
@@ -94,7 +96,7 @@ pub fn process_file(
             let full_text_for_ai = format!("{}\n{}", comments, raw_code_bytes);
 
             let sub_chunks =
-                split_text_by_token_limit(&full_text_for_ai, &tokenizer, MAX_CHUNK_TOKENS);
+                split_text_by_token_limit(&full_text_for_ai, &TOKENIZER, max_chunk_tokens);
 
             for (i, (sub_text, token_count, line_offset)) in sub_chunks.into_iter().enumerate() {
                 let unique_content = format!("{}-{}", sub_text, i);

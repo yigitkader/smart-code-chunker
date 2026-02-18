@@ -33,6 +33,14 @@ struct Args {
 
     #[arg(long, help = "Scan the folder since this commit (Example: HEAD~1)")]
     since: Option<String>,
+
+    #[arg(
+        short,
+        long,
+        default_value_t = 800,
+        help = "Max tokens per chunk, default is 800 for GPT-4"
+    )]
+    max_chunk_tokens: usize,
 }
 
 fn main() -> Result<()> {
@@ -72,11 +80,10 @@ fn main() -> Result<()> {
     );
 
     let parser_pool = Arc::new(ThreadSafeParser::new());
-
     files.par_iter().for_each(|path| {
         let tx_clone = tx.clone();
         let parser_pool_clone = parser_pool.clone();
-        if let Err(err) = process_file(path, &parser_pool_clone, &tx_clone) {
+        if let Err(err) = process_file(path, &parser_pool_clone, &tx_clone, args.max_chunk_tokens) {
             eprintln!("Error processing file {}: {}", path.display(), err);
         }
     });
