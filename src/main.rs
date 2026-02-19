@@ -6,7 +6,6 @@ mod types;
 
 use crate::files::process_file;
 use crate::types::ChunkData;
-use crate::types::ThreadSafeParser;
 use anyhow::{Result, anyhow};
 use clap::Parser;
 use crossbeam_channel::bounded;
@@ -16,8 +15,8 @@ use std::fs::OpenOptions;
 use std::io::BufWriter;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::thread;
+use tree_sitter::Parser as TreeParser;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -79,14 +78,16 @@ fn main() -> Result<()> {
         rayon::current_num_threads()
     );
 
-    let parser_pool = Arc::new(ThreadSafeParser::new());
-    files.par_iter().for_each(|path| {
-        let tx_clone = tx.clone();
-        let parser_pool_clone = parser_pool.clone();
-        if let Err(err) = process_file(path, &parser_pool_clone, &tx_clone, args.max_chunk_tokens) {
-            eprintln!("Error processing file {}: {}", path.display(), err);
-        }
-    });
+    let max_chunk_tokens = args.max_chunk_tokens;
+    files.par_iter().for_each_init(
+        || TreeParser::new(),
+        |parser, path| {
+            let tx_clone = tx.clone();
+            if let Err(err) = process_file(path, parser, &tx_clone, max_chunk_tokens) {
+                eprintln!("Error processing file {}: {}", path.display(), err);
+            }
+        },
+    );
 
     drop(tx);
     let total_chunks = writer_handle

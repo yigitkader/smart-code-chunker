@@ -1,15 +1,14 @@
 use crate::git::get_git_changes;
 use crate::hash::compute_hash;
 use crate::lang_driver::get_driver;
-use crate::types::{ChunkData, ThreadSafeParser};
-use anyhow::{Error, Result};
+use crate::types::ChunkData;
+use anyhow::{Error, Result, anyhow};
 use ignore::WalkBuilder;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use tiktoken_rs::{cl100k_base, CoreBPE};
-use tree_sitter::{Node, Query, QueryCursor};
+use tiktoken_rs::{CoreBPE, cl100k_base};
+use tree_sitter::{Node, Parser, Query, QueryCursor};
 
 pub fn get_files(path: &str, since: &Option<String>) -> Result<Vec<PathBuf>, Error> {
     let files: Vec<PathBuf> = if let Some(commit_hash) = &since {
@@ -30,7 +29,7 @@ static TOKENIZER: once_cell::sync::Lazy<CoreBPE> =
 
 pub fn process_file(
     path: &Path,
-    parser_pool: &Arc<ThreadSafeParser>,
+    parser: &mut Parser,
     tx_sender: &crossbeam_channel::Sender<ChunkData>,
     max_chunk_tokens: usize,
 ) -> Result<()> {
@@ -48,7 +47,11 @@ pub fn process_file(
     };
 
     let content = fs::read_to_string(path)?;
-    let tree = parser_pool.parse(&content, driver.get_language())?;
+    parser.set_language(driver.get_language())?;
+    parser.reset();
+    let tree = parser
+        .parse(&content, None)
+        .ok_or_else(|| anyhow!("Failed to parse file"))?;
     let mut cursor = QueryCursor::new();
     let query = Query::new(driver.get_language(), driver.get_query())?;
     let matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
