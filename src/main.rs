@@ -55,8 +55,8 @@ fn main() -> Result<()> {
     let output_path = args.output.clone();
     let writer_handle = thread::spawn(move || -> Result<usize> {
         let file = OpenOptions::new()
+            .create(true)
             .write(true)
-            .truncate(true)
             .open(&output_path)?;
 
         let mut writer = BufWriter::new(file);
