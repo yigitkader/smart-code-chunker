@@ -18,22 +18,3 @@ pub struct ChunkData {
     pub end_line: usize,
     pub token_count: usize,
 }
-
-pub struct ThreadSafeParser {
-    parser: Mutex<TreeParser>,
-}
-impl ThreadSafeParser {
-    pub fn new() -> Self {
-        Self {
-            parser: Mutex::new(TreeParser::new()),
-        }
-    }
-    pub fn parse(&self, content: &str, language: Language) -> Result<tree_sitter::Tree> {
-        let mut parser = self.parser.lock().map_err(|_| anyhow!("Lock poisoned"))?;
-        parser.set_language(language)?;
-        parser.reset();
-        parser
-            .parse(content, None)
-            .ok_or_else(|| anyhow!("Parse failed"))
-    }
-}
