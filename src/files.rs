@@ -1,13 +1,13 @@
 use crate::git::get_git_changes;
 use crate::hash::compute_hash;
 use crate::lang_driver::get_driver;
-use crate::types::ChunkData;
-use anyhow::{Error, Result, anyhow};
+use crate::types::{ChunkData, SubChunkData, VALID_KINDS};
+use anyhow::{anyhow, Error, Result};
 use ignore::WalkBuilder;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
-use tiktoken_rs::{CoreBPE, cl100k_base};
+use tiktoken_rs::{cl100k_base, CoreBPE};
 use tree_sitter::{Node, Parser, Query, QueryCursor};
 
 pub fn get_files(path: &str, since: &Option<String>) -> Result<Vec<PathBuf>, Error> {
@@ -27,17 +27,20 @@ pub fn get_files(path: &str, since: &Option<String>) -> Result<Vec<PathBuf>, Err
 static TOKENIZER: once_cell::sync::Lazy<CoreBPE> =
     once_cell::sync::Lazy::new(|| cl100k_base().expect("Failed to load tokenizer"));
 
+fn get_file_extension(path: &Path) -> String {
+    path.extension()
+        .and_then(OsStr::to_str)
+        .unwrap_or("")
+        .to_lowercase()
+}
+
 pub fn process_file(
     path: &Path,
     parser: &mut Parser,
     tx_sender: &crossbeam_channel::Sender<ChunkData>,
     max_chunk_tokens: usize,
 ) -> Result<()> {
-    let extension = path
-        .extension()
-        .and_then(OsStr::to_str)
-        .unwrap_or("")
-        .to_lowercase();
+    let extension = get_file_extension(path);
     let driver = match get_driver(&extension) {
         Some(driver) => driver,
         None => {
@@ -59,19 +62,11 @@ pub fn process_file(
     for m in matches {
         for capture in m.captures {
             let node = capture.node;
-
             let mut context_parts = Vec::new();
             let mut parent = node.parent();
             while let Some(p) = parent {
                 let kind = p.kind();
-                if kind.contains("class")
-                    || kind.contains("function")
-                    || kind.contains("method")
-                    || kind.contains("struct")
-                    || kind.contains("impl")
-                    || kind.contains("mod")
-                    || kind.contains("enum")
-                {
+                if VALID_KINDS.contains(&kind) {
                     let name = driver.extract_name(&p, &content).unwrap_or("?");
                     let clean_kind = kind.replace("_item", "").replace("_definition", "");
                     context_parts.push(format!("{}({})", clean_kind, name));
@@ -101,8 +96,11 @@ pub fn process_file(
             let sub_chunks =
                 split_text_by_token_limit(&full_text_for_ai, &TOKENIZER, max_chunk_tokens);
 
-            for (i, (sub_text, token_count, line_offset)) in sub_chunks.into_iter().enumerate() {
-                let unique_content = format!("{}-{}", sub_text, i);
+            for (i, sub_chunk) in sub_chunks.into_iter().enumerate() {
+                let text = sub_chunk.text;
+                let line_offset = sub_chunk.line_offset;
+                let token_count = sub_chunk.token_count;
+                let unique_content = format!("{}-{}", text, i);
                 let id = compute_hash(&unique_content);
 
                 let original_start_line = node.start_position().row + 1;
@@ -116,7 +114,7 @@ pub fn process_file(
                     context: context.clone(),
                     signature: signature.clone(),
                     comment: comments.clone(),
-                    code: sub_text,
+                    code: text,
                     start_line: original_start_line + line_offset,
                     end_line: original_start_line
                         + line_offset
@@ -135,17 +133,20 @@ pub fn process_file(
 }
 
 fn split_text_by_token_limit(
-    text: &String,
+    text: &str,
     tokenizer: &CoreBPE,
     max_tokens: usize,
-) -> Vec<(String, usize, usize)> {
-    // (Text, TokenCount, LineOffset)
+) -> Vec<SubChunkData> {
     let encoded = tokenizer.encode_with_special_tokens(text);
     if encoded.len() <= max_tokens {
-        return vec![(text.to_string(), encoded.len(), 0)];
+        return vec![SubChunkData {
+            text: text.to_string(),
+            token_count: encoded.len(),
+            line_offset: 0,
+        }];
     }
 
-    let mut chunks: Vec<(String, usize, usize)> = Vec::new();
+    let mut chunks: Vec<SubChunkData> = Vec::new();
     let mut current_chunk_lines: Vec<&str> = Vec::new();
     let mut current_tokens = 0;
     let mut current_line_offset = 0;
@@ -155,7 +156,11 @@ fn split_text_by_token_limit(
         if current_tokens + line_len + 1 > max_tokens {
             if !current_chunk_lines.is_empty() {
                 let chunk_str = current_chunk_lines.join("\n");
-                chunks.push((chunk_str, current_tokens, current_line_offset));
+                chunks.push(SubChunkData {
+                    text: chunk_str,
+                    token_count: current_tokens,
+                    line_offset: current_line_offset,
+                });
                 current_line_offset += current_chunk_lines.len();
                 current_chunk_lines.clear();
                 current_tokens = 0;
@@ -166,11 +171,11 @@ fn split_text_by_token_limit(
     }
 
     if !current_chunk_lines.is_empty() {
-        chunks.push((
-            current_chunk_lines.join("\n"),
-            current_tokens,
-            current_line_offset,
-        ));
+        chunks.push(SubChunkData {
+            text: current_chunk_lines.join("\n"),
+            token_count: current_tokens,
+            line_offset: current_line_offset,
+        });
     }
 
     chunks
@@ -194,5 +199,63 @@ fn get_preceding_comments(node: &Node, content: &str) -> Option<String> {
     } else {
         comments.reverse();
         Some(comments.join("\n"))
+    }
+}
+
+mod file_tests {
+    use super::*;
+
+    #[test]
+    fn test_split_text_by_token_limit_if_not_reach_limit() {
+        let text = "Here is some sample code:\nfn example() {\n    println!(\"Hello, world!\");\n}\n// This is a comment";
+        let tokenizer = cl100k_base().expect("Failed to load tokenizer");
+        let max_tokens = 100;
+
+        let expected = [SubChunkData { text: "Here is some sample code:\nfn example() {\n    println!(\"Hello, world!\");\n}\n// This is a comment".to_string(), token_count: 23, line_offset: 0 }];
+
+        assert_eq!(
+            split_text_by_token_limit(text, &tokenizer, max_tokens),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_split_text_by_token_limit_if_more_than_limit() {
+        let text = "Here is some sample code:\nfn example() {\n    println!(\"Hello, world!\");\n}\n// This is a comment";
+        let tokenizer = cl100k_base().expect("Failed to load tokenizer");
+        let max_tokens = 4;
+
+        let expected = [
+            SubChunkData {
+                text: "Here is some sample code:".to_string(),
+                token_count: 7,
+                line_offset: 0,
+            },
+            SubChunkData {
+                text: "fn example() {".to_string(),
+                token_count: 5,
+                line_offset: 1,
+            },
+            SubChunkData {
+                text: "    println!(\"Hello, world!\");".to_string(),
+                token_count: 8,
+                line_offset: 2,
+            },
+            SubChunkData {
+                text: "}".to_string(),
+                token_count: 2,
+                line_offset: 3,
+            },
+            SubChunkData {
+                text: "// This is a comment".to_string(),
+                token_count: 6,
+                line_offset: 4,
+            },
+        ];
+
+        assert_eq!(
+            split_text_by_token_limit(text, &tokenizer, max_tokens),
+            expected
+        );
     }
 }

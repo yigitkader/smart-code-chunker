@@ -50,13 +50,14 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let (tx, rx) = bounded::<ChunkData>(1000);
+    let (tx, rx) = bounded::<ChunkData>(10000);
 
     let output_path = args.output.clone();
     let writer_handle = thread::spawn(move || -> Result<usize> {
         let file = OpenOptions::new()
             .create(true)
             .write(true)
+            .truncate(true)
             .open(&output_path)?;
 
         let mut writer = BufWriter::new(file);

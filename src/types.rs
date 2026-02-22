@@ -1,7 +1,4 @@
-use anyhow::{Result, anyhow};
 use serde::Serialize;
-use std::sync::Mutex;
-use tree_sitter::{Language, Node, Parser as TreeParser, Query, QueryCursor};
 
 #[derive(Debug, Serialize)]
 pub struct ChunkData {
@@ -18,3 +15,14 @@ pub struct ChunkData {
     pub end_line: usize,
     pub token_count: usize,
 }
+
+#[derive(Debug, Serialize, PartialEq)]
+pub struct SubChunkData {
+    pub text: String,
+    pub token_count: usize,
+    pub line_offset: usize,
+}
+
+pub const VALID_KINDS: [&str; 7] = [
+    "class", "function", "method", "struct", "impl", "mod", "enum",
+];
