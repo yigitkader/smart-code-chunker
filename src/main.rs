@@ -8,7 +8,9 @@ use crate::files::process_file;
 use crate::types::ChunkData;
 use anyhow::{Result, anyhow};
 use clap::Parser;
+use clap_verbosity_flag::Verbosity;
 use crossbeam_channel::bounded;
+use log::{error, info, warn};
 use rayon::iter::ParallelIterator;
 use rayon::prelude::IntoParallelRefIterator;
 use std::fs::OpenOptions;
@@ -33,6 +35,9 @@ struct Args {
     #[arg(long, help = "Scan the folder since this commit (Example: HEAD~1)")]
     since: Option<String>,
 
+    #[command(flatten)]
+    verbose: Verbosity,
+
     #[arg(
         short,
         long,
@@ -44,9 +49,14 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    env_logger::Builder::new()
+        .filter_level(args.verbose.log_level_filter())
+        .init();
+
     let files: Vec<PathBuf> = files::get_files(&args.path, &args.since)?;
     if files.is_empty() {
-        println!("No files found in the specified path.");
+        warn!("No files found in the specified path.");
         return Ok(());
     }
 
@@ -67,13 +77,13 @@ fn main() -> Result<()> {
             writeln!(writer, "{}", serde_json::to_string(&chunk)?)?;
             count += 1;
             if count % 10 == 0 {
-                println!("{} chunks written to file...", count);
+                info!("{} chunks written to file...", count);
             }
         }
         Ok(count)
     });
 
-    println!(
+    info!(
         "Scanning: {} files with thread size: {}",
         files.len(),
         rayon::current_num_threads()
@@ -85,7 +95,7 @@ fn main() -> Result<()> {
         |parser, path| {
             let tx_clone = tx.clone();
             if let Err(err) = process_file(path, parser, &tx_clone, max_chunk_tokens) {
-                eprintln!("Error processing file {}: {}", path.display(), err);
+                error!("Error processing file {}: {}", path.display(), err);
             }
         },
     );
@@ -93,11 +103,12 @@ fn main() -> Result<()> {
     drop(tx);
     let total_chunks = writer_handle
         .join()
-        .map_err(|_| anyhow!("Writer thread panicked"))?;
-    println!(
+        .map_err(|_| anyhow!("Error joining writer thread"))
+        .map_err(|_| anyhow!("Writer thread panicked"))??;
+    info!(
         "Processing completed. Total chunks written: {:?}",
         total_chunks
     );
-    println!("Output file: {}", args.output);
+    info!("Output file: {}", args.output);
     Ok(())
 }

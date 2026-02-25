@@ -7,15 +7,16 @@ use ignore::WalkBuilder;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+use log::{info, warn};
 use tiktoken_rs::{cl100k_base, CoreBPE};
 use tree_sitter::{Node, Parser, Query, QueryCursor};
 
 pub fn get_files(path: &str, since: &Option<String>) -> Result<Vec<PathBuf>, Error> {
     let files: Vec<PathBuf> = if let Some(commit_hash) = &since {
-        println!("Smart chunker started with git hash: {}", commit_hash);
+        info!("Smart chunker started with git hash: {}", commit_hash);
         get_git_changes(path, commit_hash)?
     } else {
-        println!("Smart chunker started with full scan");
+        info!("Smart chunker started with full scan");
         let walker = WalkBuilder::new(path).standard_filters(true).build();
         walker
             .filter_map(|r| r.ok().map(|e| e.into_path()).filter(|p| p.is_file()))
@@ -44,7 +45,7 @@ pub fn process_file(
     let driver = match get_driver(&extension) {
         Some(driver) => driver,
         None => {
-            println!("No driver found for file: {:?}", path);
+            warn!("No driver found for file: {:?}", path);
             return Ok(());
         }
     };
