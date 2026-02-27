@@ -117,7 +117,7 @@ pub fn process_file(
                     comment: comments.clone(),
                     code: text.clone(),
                     start_line: original_start_line + line_offset,
-                    end_line: original_start_line + text.lines().count().saturating_sub(1),
+                    end_line: original_start_line + line_offset + text.lines().count().saturating_sub(1),
 
                     token_count,
                 };
