@@ -1,105 +1,88 @@
-Here is the English version of the README.md. It highlights the semantic parsing, multi-threading, and Git integration features of your project.
+# smart-code-chunker
 
-```markdown
-# Smart Code Chunker 🧠✂️
+A CLI tool that splits your codebase into chunks for RAG or semantic search. Instead of blindly splitting by line count, it uses tree-sitter to parse the AST and extracts meaningful blocks like functions, structs, and classes. Chunks can be further split if they exeed the token limit.
 
-**Smart Code Chunker** is a high-performance, semantic code chunking tool designed for RAG (Retrieval-Augmented Generation) and AI-based code search systems. Unlike plain text splitters, it analyzes the code's AST (Abstract Syntax Tree) to extract classes, functions, and structs without breaking their logical boundaries.
+## Requirements
 
-## 🌟 Key Features
+- Rust (install via rustup: https://rustup.rs)
+- Git must be installed if you use the `--since` flag
 
-* 🌲 **Semantic Chunking:** Uses `tree-sitter` to understand the syntactic structure of the code and splits it into logical blocks (class, struct, impl, function).
-* ⚡ **High Performance (Multi-threading):** Processes large codebases in seconds using multi-threading powered by the `rayon` crate.
-* 📏 **Token Awareness:** Uses `tiktoken-rs` (OpenAI `cl100k_base`) to keep chunks within a specified maximum token limit (default: 800). Large blocks are smartly split into sub-chunks.
-* 🐙 **Git Integration (Smart Scan):** Integrates with Git to process only modified files. Using arguments like `--since HEAD~1`, you can target only the recently updated code.
-* 🧬 **Rich Context Output:** Extracts the parent hierarchy (e.g., `mod > impl > function`), SHA256 ID, function signature, and preceding docstrings/comments for each chunk, exporting them in `.jsonl` format.
-
-## 🛠️ Supported Languages
-
-The tool currently includes native Tree-sitter drivers for the following languages:
-* 🦀 **Rust** (`.rs`)
-* 🐍 **Python** (`.py`)
-
-*(Adding new language drivers is as easy as implementing the `LanguageDriver` trait.)*
-
-## 🚀 Installation & Build
-
-You need to have [Rust and Cargo](https://rustup.rs/) installed on your system to build the project.
+## Installation
 
 ```bash
-# Clone the repository
-git clone <repository-url>
+git clone https://github.com/<username>/smart-code-chunker.git
 cd smart-code-chunker
-
-# Build in release mode (for maximum performance)
 cargo build --release
-
 ```
 
-## 💻 Usage
+The binary ends up in `target/release/smart-code-chunker`. You can add it to your PATH or just run with `cargo run --release --`.
 
-You can run the compiled binary or use `cargo run` directly.
+## Usage
 
-### Basic Scan (All Files)
-
-Scans all supported files in the target directory and writes to `output.jsonl`:
+**Scan entire project, write to output.jsonl:**
 
 ```bash
-cargo run --release -- --path /path/to/your/project
-
+cargo run --release -- -p /path/to/project
 ```
 
-### Git Diff Scan (Only Changed Files)
-
-Process only the files that have changed since a specific commit:
+**Only process files changed since last commit** (handy for incremental indexing in CI):
 
 ```bash
-cargo run --release -- --path /path/to/your/project --since HEAD~1
-
+cargo run --release -- -p /path/to/project --since HEAD~1
 ```
 
-### Custom Output and Token Limit
-
-Specify a different output file and adjust the token size limit for GPT-3.5/GPT-4:
+**Custom output file and token limit:**
 
 ```bash
-cargo run --release -- --path /path/to/project --output chunks.jsonl --max-chunk-tokens 500
-
+cargo run --release -- -p ./src -o chunks.jsonl -m 500
 ```
 
-### CLI Arguments
+**Arguments:**
 
-* `-p, --path <PATH>`: The target folder path to scan.
-* `-o, --output <OUTPUT>`: Output file name (Default: `output.jsonl`).
-* `--since <SINCE>`: Scans only the files changed since the specified commit (e.g., `HEAD~1`, `main`).
-* `-m, --max-chunk-tokens <MAX>`: Maximum number of tokens per chunk (Default: `800`).
+| Param | Short | Description |
+|-------|-------|-------------|
+| `--path` | `-p` | Directory to scan |
+| `--output` | `-o` | Output file (default: output.jsonl) |
+| `--since` | - | Only files changed since this commit (e.g. HEAD~1, main) |
+| `--max-chunk-tokens` | `-m` | Max tokens per chunk (default: 800) |
+| `--verbose` / `-v` | - | Log level |
 
-## 📄 Output Format (JSONL)
+## Supported languages
 
-The output file (`.jsonl`) contains rich metadata ready to be consumed by LLMs and Vector Databases. Each line is a valid JSON object:
+- Rust (.rs)
+- Python (.py)
 
-```json
-{
-  "id": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "file_path": "/Users/dream/RustroverProjects/project/src/main.rs",
-  "language": "Rust",
-  "chunk_type": "function_item",
-  "chunk_name": "process_data",
-  "context": "mod(utils) > impl(DataProcessor)",
-  "signature": "pub fn process_data(input: &str) -> Result<()> {",
-  "comment": "/// Processes the incoming string and returns a result.",
-  "code": "pub fn process_data(input: &str) -> Result<()> {\n    // ... \n}",
-  "start_line": 42,
-  "end_line": 55,
-  "token_count": 128
-}
+To add another language that has a tree-sitter grammar, implement the `LanguageDriver` trait. See `lang_driver.rs`.
 
-```
+## Output format
 
-## 🏗️ Project Architecture
+Each line is a single JSON object (JSONL). Chunks contain:
 
-* `main.rs`: Manages CLI arguments, sets up the thread pool, and coordinates file writing.
-* `files.rs`: Handles Tree-sitter parsing, AST traversal, and token-based splitting.
-* `git.rs`: Detects changed files using the `git diff` command.
-* `lang_driver.rs`: Contains Tree-sitter queries and language-specific extraction rules.
-* `hash.rs`: Calculates SHA256 hashes using the `sha2` crate for unique chunk IDs.
-* `types.rs`: Defines core data structures like `ChunkData`.
+- `id` — SHA256 hash (generated from file path + content + index)
+- `file_path` — Source file
+- `language` — Rust, Python, etc.
+- `chunk_type` — function_item, struct_item, class_definition, etc.
+- `chunk_name` — Name of the function/struct/class
+- `context` — Parent hierachy (e.g. `mod(utils) > impl(MyStruct)`)
+- `signature` — First line (function signature etc.)
+- `comment` — Docstring/comment directly above the block
+- `code` — Full code of the block
+- `start_line`, `end_line` — Line range
+- `token_count` — cl100k_base token count
+
+Large blocks get split into sub-chunks when they exeed the limit. Each sub-chunk has its own `start_line` and `end_line`.
+
+## How it works
+
+1. If `--since` is given, runs `git diff --name-only` to get changed files. Otherwise walks the directory with the `ignore` crate (respects .gitignore).
+2. Parses each file with tree-sitter, finds chunk nodes based on the langauge driver.
+3. Chunks are split by token count (tiktoken cl100k_base).
+4. Paralel processing via rayon, writer runs in a separate thread dumping JSONL.
+
+## Contributing
+
+PRs welcome. To add a new language, implement a driver in `lang_driver.rs` and wire it into `get_driver`.
+
+## License
+
+MIT
