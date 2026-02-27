@@ -2,13 +2,13 @@ use crate::git::get_git_changes;
 use crate::hash::compute_hash;
 use crate::lang_driver::get_driver;
 use crate::types::{ChunkData, SubChunkData, VALID_KINDS};
-use anyhow::{anyhow, Error, Result};
+use anyhow::{Error, Result, anyhow};
 use ignore::WalkBuilder;
+use log::{error, info, warn};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
-use log::{info, warn};
-use tiktoken_rs::{cl100k_base, CoreBPE};
+use tiktoken_rs::{CoreBPE, cl100k_base};
 use tree_sitter::{Node, Parser, Query, QueryCursor};
 
 pub fn get_files(path: &str, since: &Option<String>) -> Result<Vec<PathBuf>, Error> {
@@ -101,7 +101,7 @@ pub fn process_file(
                 let text = sub_chunk.text;
                 let line_offset = sub_chunk.line_offset;
                 let token_count = sub_chunk.token_count;
-                let unique_content = format!("{}-{}", text, i);
+                let unique_content = format!("{}-{}-{}", path.display(), text, i);
                 let id = compute_hash(&unique_content);
 
                 let original_start_line = node.start_position().row + 1;
@@ -115,15 +115,15 @@ pub fn process_file(
                     context: context.clone(),
                     signature: signature.clone(),
                     comment: comments.clone(),
-                    code: text,
+                    code: text.clone(),
                     start_line: original_start_line + line_offset,
-                    end_line: original_start_line
-                        + line_offset
-                        + raw_code_bytes.lines().count().min(1),
+                    end_line: original_start_line + text.lines().count().saturating_sub(1),
+
                     token_count,
                 };
 
                 if tx_sender.send(chunk).is_err() {
+                    error!("Failed to send chunk to channel for file: {:?}", path);
                     break;
                 }
             }

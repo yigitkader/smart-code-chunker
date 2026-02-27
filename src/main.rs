@@ -103,7 +103,6 @@ fn main() -> Result<()> {
     drop(tx);
     let total_chunks = writer_handle
         .join()
-        .map_err(|_| anyhow!("Error joining writer thread"))
         .map_err(|_| anyhow!("Writer thread panicked"))??;
     info!(
         "Processing completed. Total chunks written: {:?}",

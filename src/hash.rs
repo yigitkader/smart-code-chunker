@@ -6,18 +6,14 @@ pub fn compute_hash(content: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
-
 mod hash_tests {
     use super::*;
 
     #[test]
-    fn test_compute_hash() {
+    fn test_hello_world_hash() {
         let content = "Hello, world!";
         let hash = compute_hash(content);
         let hell_world_hash = "315f5bdb76d078c43b8ac0064e4a0164612b1fce77c869345bfc94c75894edd3";
-        assert_eq!(
-            hash,
-            hell_world_hash
-        );
+        assert_eq!(hash, hell_world_hash);
     }
 }
